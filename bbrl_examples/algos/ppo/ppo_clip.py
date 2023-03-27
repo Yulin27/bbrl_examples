@@ -37,7 +37,7 @@ from bbrl_examples.models.envs import create_env_agents
 from bbrl_examples.models.stochastic_actors import (
     TunableVarianceContinuousActor,
     TunableVarianceContinuousActorExp,
-    TunableVariancePPOActor,
+    TunableVariancePPOLSTMActor,
 )
 from bbrl_examples.models.stochastic_actors import SquashedGaussianActor
 from bbrl_examples.models.stochastic_actors import StateDependentVarianceContinuousActor
@@ -51,7 +51,7 @@ from bbrl.visu.visu_critics import plot_critic
 
 import matplotlib
 
-matplotlib.use("TkAgg")
+#matplotlib.use("TkAgg")
 
 
 def make_gym_env(env_name):
@@ -339,9 +339,9 @@ def run_ppo_clip(cfg):
     # config_name="ppo_lunarlander.yaml",
     # config_name="ppo_swimmer.yaml",
     # config_name="ppo_pendulum.yaml",
-    # config_name="ppo_cartpole.yaml",
-    config_name="ppo_cartpole_continuous.yaml",
-    version_base="1.1",
+    config_name="ppo_cartpole.yaml",
+    #config_name="ppo_cartpole_continuous.yaml",
+    #version_base="1.1",
 )
 def main(cfg: DictConfig):
     # print(OmegaConf.to_yaml(cfg))
