@@ -301,3 +301,42 @@ class TunableVariancePPOActor(StochasticActor):
         mean = self.model(obs)
         # std must be positive
         return Independent(Normal(mean, self.soft_plus(self.std_param[:, 0])), 1), mean
+    
+class TunableVariancePPOLSTMActor(StochasticActor):
+    """
+    The official PPO actor uses Tanh activation functions and orthogonal initialization
+    """
+
+    def __init__(self, state_dim, hidden_layers, action_dim):
+        super().__init__()
+        layers = [state_dim] + list(hidden_layers) + [action_dim]
+        self.lstm = nn.LSTM(layers[0], layers[1], batch_first=True)
+        nn.init.orthogonal_(self.lstm.weight_ih_l0)
+        nn.init.orthogonal_(self.lstm.weight_hh_l0)
+        self.lin_layers = nn.ModuleList()
+        for i in range(len(layers)-2):
+            self.lin_layers.append(nn.Linear(layers[i+1], layers[i+2]))
+            nn.init.orthogonal_(self.lin_layers[i].weight)
+        self.std_param = nn.Parameter(torch.randn(1, action_dim))
+        self.soft_plus = nn.Softplus()
+
+    def init_hidden(self, batch_size):
+        weight = next(self.parameters())
+        return (weight.new_zeros(1, batch_size, self.lstm.hidden_size),
+                weight.new_zeros(1, batch_size, self.lstm.hidden_size))
+
+    def forward(self, obs: torch.Tensor, hidden=None):
+        if hidden is None:
+            hidden = self.init_hidden(obs.size(0))
+        lstm_out, hidden = self.lstm(obs.view(obs.size(0), -1, obs.size(-1)), hidden)
+        x = lstm_out[:, -1, :]
+        for i in range(len(self.lin_layers)):
+            x = self.lin_layers[i](x)
+            if i < len(self.lin_layers) - 1:
+                x = nn.Tanh()(x)
+        return x
+
+    def get_distribution(self, obs: torch.Tensor):
+        mean = self.forward(obs)
+        # std must be positive
+        return Independent(Normal(mean, self.soft_plus(self.std_param)), 1), mean
