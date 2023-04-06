@@ -306,35 +306,45 @@ class TunableVariancePPOLSTMActor(StochasticActor):
     """
     The official PPO actor uses Tanh activation functions and orthogonal initialization
     """
-
-    def __init__(self, state_dim, hidden_layers, action_dim):
+    def __init__(self, state_dim, hidden_dim, nb_layers, action_dim):
         super().__init__()
-        layers = [state_dim] + list(hidden_layers) + [action_dim]
-        self.lstm = nn.LSTM(layers[0], layers[1], batch_first=True)
-        nn.init.orthogonal_(self.lstm.weight_ih_l0)
-        nn.init.orthogonal_(self.lstm.weight_hh_l0)
-        self.lin_layers = nn.ModuleList()
-        for i in range(len(layers)-2):
-            self.lin_layers.append(nn.Linear(layers[i+1], layers[i+2]))
-            nn.init.orthogonal_(self.lin_layers[i].weight)
-        self.std_param = nn.Parameter(torch.randn(1, action_dim))
-        self.soft_plus = nn.Softplus()
+        self.is_q_function = False
+        self.hidden_dim = hidden_dim
+        self.model = nn.LSTM(state_dim, hidden_dim, nb_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, action_dim)
+        self.nb_layers = nb_layers
+        self.batch_size = 1
+        self.h = torch.zeros(nb_layers, self.batch_size, hidden_dim)
+        self.c = torch.zeros(nb_layers, self.batch_size, hidden_dim)
+        self.init_weights()
 
-    def init_hidden(self, batch_size):
-        weight = next(self.parameters())
-        return (weight.new_zeros(1, batch_size, self.lstm.hidden_size),
-                weight.new_zeros(1, batch_size, self.lstm.hidden_size))
+    def init_weights(self):
+        # Orthogonal initialization for LSTM weights
+        for name, param in self.model.named_parameters():
+            if "weight_ih" in name:
+                nn.init.orthogonal_(param)
+            elif "weight_hh" in name:
+                nn.init.orthogonal_(param)
 
-    def forward(self, obs: torch.Tensor, hidden=None):
-        if hidden is None:
-            hidden = self.init_hidden(obs.size(0))
-        lstm_out, hidden = self.lstm(obs.view(obs.size(0), -1, obs.size(-1)), hidden)
-        x = lstm_out[:, -1, :]
-        for i in range(len(self.lin_layers)):
-            x = self.lin_layers[i](x)
-            if i < len(self.lin_layers) - 1:
-                x = nn.Tanh()(x)
-        return x
+    def forward(self, t, choose_action=True, **kwargs):
+        obs = self.get(("env/env_obs", t))
+        self.batch_size = obs.shape[0]
+        lstm_out, (h, c) = self.model(obs.unsqueeze(0), (self.h, self.c))
+
+        # Extract the v-value from LSTM output
+        v_value = lstm_out[:, -1, :]  # Extract the last timestep's output as the v-value
+        q_values = self.fc(v_value)
+        # Apply Tanh activation to q_values
+        q_values = torch.tanh(q_values)
+        self.set(("v_value", t), v_value)
+        self.set(("q_values", t), q_values)
+        if choose_action:
+            action = q_values.argmax(1)
+            self.set(("action", t), action)
+            
+    def refresh_internal_values(self):
+        self.h = torch.zeros(self.nb_layers, self.batch_size, self.hidden_dim)
+        self.c = torch.zeros(self.nb_layers, self.batch_size, self.hidden_dim)
 
     def get_distribution(self, obs: torch.Tensor):
         mean = self.forward(obs)

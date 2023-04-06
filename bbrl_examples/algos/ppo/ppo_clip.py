@@ -9,6 +9,8 @@ import gym
 import bbrl_gym
 import hydra
 
+from tensorboard import notebook
+
 from omegaconf import DictConfig
 
 from bbrl import get_arguments, get_class
@@ -51,7 +53,7 @@ from bbrl.visu.visu_critics import plot_critic
 
 import matplotlib
 
-#matplotlib.use("TkAgg")
+matplotlib.use("TkAgg")
 
 
 def make_gym_env(env_name):
@@ -125,13 +127,29 @@ def run_ppo_clip(cfg):
 
     train_env_agent, eval_env_agent = create_env_agents(cfg)
 
-    (
-        train_agent,
-        eval_agent,
-        critic_agent,
-        old_policy,
-        old_critic_agent,
-    ) = create_ppo_agent(cfg, train_env_agent, eval_env_agent)
+
+    # 2) Create the PPO agent
+    obs_size, act_size = train_env_agent.get_obs_and_actions_sizes()
+    policy = globals()[cfg.algorithm.actor_type](
+        obs_size, cfg.algorithm.architecture.actor_hidden_size, act_size
+    )
+    tr_agent = Agents(train_env_agent, policy)
+    ev_agent = Agents(eval_env_agent, policy)
+
+    lstm_agent = TunableVariancePPOLSTMActor(obs_size, cfg.algorithm.architecture.critic_hidden_size[0], 2, act_size)
+
+    critic_agent = TemporalAgent(lstm_agent)
+    old_critic_agent = copy.deepcopy(critic_agent)
+
+    train_agent = TemporalAgent(tr_agent)
+    eval_agent = TemporalAgent(ev_agent)
+    train_agent.seed(cfg.algorithm.seed)
+
+    old_policy = copy.deepcopy(policy)
+
+
+
+
 
     # It seems that we can call the policy as if it was a temporal agent
     policy = train_agent.agent.agents[1]
@@ -145,6 +163,8 @@ def run_ppo_clip(cfg):
 
     # Training loop
     for epoch in range(cfg.algorithm.max_epochs):
+        lstm_agent.refresh_internal_values()
+
         # Execute the training agent in the workspace
 
         # Handles continuation
@@ -212,7 +232,9 @@ def run_ppo_clip(cfg):
             )
 
         # then we compute the advantage using the clamped critic values
-        advantage = compute_advantage(cfg, reward, must_bootstrap, v_value)
+        # print("reward", reward.shape)
+        # print("v_value", v_value.shape)
+        advantage = compute_advantage(cfg, reward, must_bootstrap, v_value[:,:,-1])
 
         # We store the advantage into the transition_workspace
         transition_workspace.set_full("advantage", advantage)
@@ -291,6 +313,8 @@ def run_ppo_clip(cfg):
         if nb_steps - tmp_steps > cfg.algorithm.eval_interval:
             tmp_steps = nb_steps
             eval_workspace = Workspace()  # Used for evaluation
+            lstm_agent.refresh_internal_values()
+
             eval_agent(
                 eval_workspace,
                 t=0,
@@ -349,8 +373,13 @@ def main(cfg: DictConfig):
     chrono = Chrono()
     run_ppo_clip(cfg)
     chrono.stop()
+    # notebook.start("--logdir ./ppo_logs")
+
 
 
 if __name__ == "__main__":
     sys.path.append(os.getcwd())
     main()
+
+
+     
