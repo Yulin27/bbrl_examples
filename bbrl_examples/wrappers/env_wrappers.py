@@ -15,7 +15,7 @@ class FilterWrapper(gym.ObservationWrapper):
         return np.array([observation[0], observation[2]])
 
 class DelayWrapper(gym.ObservationWrapper):
-    def __init__(self, env, N=2):
+    def __init__(self, env, N=1):
         super().__init__(env)
         self.N = N
         self.state_buffer = np.zeros((N, *env.observation_space.shape))
@@ -67,7 +67,6 @@ class RocketLanderWrapper(gym.Wrapper):
         reward += shaping
 
         return next_state, reward, done, info
-
 
 class MazeMDPContinuousWrapper(gym.Wrapper):
     """
