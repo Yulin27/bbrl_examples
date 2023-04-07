@@ -1,6 +1,6 @@
 from bbrl import get_arguments, get_class, instantiate_class
 from bbrl.agents.gymb import AutoResetGymAgent, NoAutoResetGymAgent
-
+from bbrl_examples.wrappers.env_wrappers import FilterWrapper, DelayWrapper
 
 class AutoResetEnvAgent(AutoResetGymAgent):
     # Create the environment agent
@@ -9,6 +9,11 @@ class AutoResetEnvAgent(AutoResetGymAgent):
         super().__init__(get_class(cfg.gym_env), get_arguments(cfg.gym_env), n_envs)
         env = instantiate_class(cfg.gym_env)
         env.seed(cfg.algorithm.seed)
+        # Appliquer le wrapper FilterWrapper pour enlever les informations de vitesse
+        env = FilterWrapper(env)
+
+        # Appliquer le wrapper DelayWrapper pour renvoyer les informations au bout de N pas de temps
+        env = DelayWrapper(env)
         del env
 
 
@@ -19,6 +24,11 @@ class NoAutoResetEnvAgent(NoAutoResetGymAgent):
         super().__init__(get_class(cfg.gym_env), get_arguments(cfg.gym_env), n_envs)
         env = instantiate_class(cfg.gym_env)
         env.seed(cfg.algorithm.seed)
+        # Appliquer le wrapper FilterWrapper pour enlever les informations de vitesse
+        env = FilterWrapper(env)
+
+        # Appliquer le wrapper DelayWrapper pour renvoyer les informations au bout de N pas de temps
+        env = DelayWrapper(env, 200)
         self.observation_space = env.observation_space
         self.action_space = env.action_space
         del env

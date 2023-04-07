@@ -2,6 +2,33 @@ import gym
 import random
 import numpy as np
 
+class FilterWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.observation_space = gym.spaces.Box(
+            low=np.array([env.observation_space.low[0], env.observation_space.low[2]]),
+            high=np.array([env.observation_space.high[0], env.observation_space.high[2]]),
+            dtype=np.float32,
+        )
+
+    def observation(self, observation):
+        return np.array([observation[0], observation[2]])
+
+class DelayWrapper(gym.ObservationWrapper):
+    def __init__(self, env, N=2):
+        super().__init__(env)
+        self.N = N
+        self.state_buffer = np.zeros((N, *env.observation_space.shape))
+        self.observation_space = env.observation_space
+
+    def reset(self, **kwargs):
+        self.state_buffer = np.zeros((self.N, *self.observation_space.shape))
+        return self.observation(self.env.reset(**kwargs))
+
+    def observation(self, observation):
+        self.state_buffer = np.roll(self.state_buffer, shift=-1, axis=0)
+        self.state_buffer[-1] = observation
+        return self.state_buffer[0]
 
 class RocketLanderWrapper(gym.Wrapper):
     """

@@ -1,3 +1,11 @@
+"""
+This version of PPO works, but it incorrectly samples minibatches randomly from the rollouts
+without making sure that each sample is used once and only
+See: https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
+for a full description of all the coding tricks that should be integrated
+"""
+
+
 import sys
 import os
 import copy
@@ -8,8 +16,6 @@ import torch.nn as nn
 import gym
 import bbrl_gym
 import hydra
-
-from tensorboard import notebook
 
 from omegaconf import DictConfig
 
@@ -39,7 +45,7 @@ from bbrl_examples.models.envs import create_env_agents
 from bbrl_examples.models.stochastic_actors import (
     TunableVarianceContinuousActor,
     TunableVarianceContinuousActorExp,
-    TunableVariancePPOLSTMActor,
+    TunableVariancePPOActor,
 )
 from bbrl_examples.models.stochastic_actors import SquashedGaussianActor
 from bbrl_examples.models.stochastic_actors import StateDependentVarianceContinuousActor
@@ -50,6 +56,7 @@ from bbrl_examples.models.critics import VAgent
 # Allow to display a policy and a critic as a 2D map
 from bbrl.visu.visu_policies import plot_policy
 from bbrl.visu.visu_critics import plot_critic
+from bbrl_examples.wrappers.env_wrappers import FilterWrapper, DelayWrapper
 
 import matplotlib
 
@@ -57,7 +64,7 @@ matplotlib.use("TkAgg")
 
 
 def make_gym_env(env_name):
-    return gym.make(env_name)
+    return DelayWrapper(gym.make(env_name),10)
 
 
 # Create the PPO Agent
@@ -127,29 +134,13 @@ def run_ppo_clip(cfg):
 
     train_env_agent, eval_env_agent = create_env_agents(cfg)
 
-
-    # 2) Create the PPO agent
-    obs_size, act_size = train_env_agent.get_obs_and_actions_sizes()
-    policy = globals()[cfg.algorithm.actor_type](
-        obs_size, cfg.algorithm.architecture.actor_hidden_size, act_size
-    )
-    tr_agent = Agents(train_env_agent, policy)
-    ev_agent = Agents(eval_env_agent, policy)
-
-    lstm_agent = TunableVariancePPOLSTMActor(obs_size, cfg.algorithm.architecture.critic_hidden_size[0], 2, act_size)
-
-    critic_agent = TemporalAgent(lstm_agent)
-    old_critic_agent = copy.deepcopy(critic_agent)
-
-    train_agent = TemporalAgent(tr_agent)
-    eval_agent = TemporalAgent(ev_agent)
-    train_agent.seed(cfg.algorithm.seed)
-
-    old_policy = copy.deepcopy(policy)
-
-
-
-
+    (
+        train_agent,
+        eval_agent,
+        critic_agent,
+        old_policy,
+        old_critic_agent,
+    ) = create_ppo_agent(cfg, train_env_agent, eval_env_agent)
 
     # It seems that we can call the policy as if it was a temporal agent
     policy = train_agent.agent.agents[1]
@@ -163,8 +154,6 @@ def run_ppo_clip(cfg):
 
     # Training loop
     for epoch in range(cfg.algorithm.max_epochs):
-        lstm_agent.refresh_internal_values()
-
         # Execute the training agent in the workspace
 
         # Handles continuation
@@ -232,9 +221,7 @@ def run_ppo_clip(cfg):
             )
 
         # then we compute the advantage using the clamped critic values
-        # print("reward", reward.shape)
-        # print("v_value", v_value.shape)
-        advantage = compute_advantage(cfg, reward, must_bootstrap, v_value[:,:,-1])
+        advantage = compute_advantage(cfg, reward, must_bootstrap, v_value)
 
         # We store the advantage into the transition_workspace
         transition_workspace.set_full("advantage", advantage)
@@ -313,8 +300,6 @@ def run_ppo_clip(cfg):
         if nb_steps - tmp_steps > cfg.algorithm.eval_interval:
             tmp_steps = nb_steps
             eval_workspace = Workspace()  # Used for evaluation
-            lstm_agent.refresh_internal_values()
-
             eval_agent(
                 eval_workspace,
                 t=0,
@@ -364,8 +349,8 @@ def run_ppo_clip(cfg):
     # config_name="ppo_swimmer.yaml",
     # config_name="ppo_pendulum.yaml",
     config_name="ppo_cartpole.yaml",
-    #config_name="ppo_cartpole_continuous.yaml",
-    #version_base="1.1",
+    # config_name="ppo_cartpole_continuous.yaml",
+    # version_base="1.1",
 )
 def main(cfg: DictConfig):
     # print(OmegaConf.to_yaml(cfg))
@@ -373,13 +358,8 @@ def main(cfg: DictConfig):
     chrono = Chrono()
     run_ppo_clip(cfg)
     chrono.stop()
-    # notebook.start("--logdir ./ppo_logs")
-
 
 
 if __name__ == "__main__":
     sys.path.append(os.getcwd())
     main()
-
-
-     
