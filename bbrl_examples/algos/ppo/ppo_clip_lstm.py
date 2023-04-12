@@ -2,7 +2,7 @@ from bbrl_examples.wrappers.env_wrappers import FilterWrapper, DelayWrapper
 import sys
 import os
 import copy
-
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -59,21 +59,20 @@ matplotlib.use("TkAgg")
 
 
 def make_gym_env(env_name):
-    return DelayWrapper(gym.make(env_name),10)
+    return gym.make(env_name)
 
 
 # Create the PPO Agent
 def create_ppo_agent(cfg, train_env_agent, eval_env_agent):
     obs_size, act_size = train_env_agent.get_obs_and_actions_sizes()
     policy = globals()[cfg.algorithm.actor_type](
-        obs_size, cfg.algorithm.architecture.actor_hidden_size, act_size
+        obs_size, cfg.algorithm.architecture.actor_hidden_size[0], 2, act_size
     )
     tr_agent = Agents(train_env_agent, policy)
     ev_agent = Agents(eval_env_agent, policy)
 
-    critic_agent = TemporalAgent(
-        VAgent(obs_size, cfg.algorithm.architecture.critic_hidden_size)
-    )
+    critic_agent = TemporalAgent(VAgent(obs_size, cfg.algorithm.architecture.critic_hidden_size))
+
     old_critic_agent = copy.deepcopy(critic_agent)
 
     train_agent = TemporalAgent(tr_agent)
@@ -82,7 +81,7 @@ def create_ppo_agent(cfg, train_env_agent, eval_env_agent):
 
     old_policy = copy.deepcopy(policy)
 
-    return train_agent, eval_agent, critic_agent, old_policy, old_critic_agent
+    return train_agent, eval_agent, critic_agent, old_policy, old_critic_agent, policy
 
 
 def setup_optimizer(cfg, actor, critic):
@@ -94,6 +93,7 @@ def setup_optimizer(cfg, actor, critic):
 
 def compute_advantage(cfg, reward, must_bootstrap, v_value):
     # Compute temporal difference with GAE
+    # print(v_value.shape, reward.shape, must_bootstrap.shape)
     advantage = gae(
         v_value,
         reward,
@@ -131,23 +131,14 @@ def run_ppo_clip(cfg):
 
 
     # 2) Create the PPO agent
-    obs_size, act_size = train_env_agent.get_obs_and_actions_sizes()
-    policy = globals()[cfg.algorithm.actor_type](
-        obs_size, cfg.algorithm.architecture.actor_hidden_size, act_size
-    )
-    tr_agent = Agents(train_env_agent, policy)
-    ev_agent = Agents(eval_env_agent, policy)
-
-    lstm_agent = TunableVariancePPOLSTMActor(obs_size, cfg.algorithm.architecture.critic_hidden_size[0], 2, act_size)
-
-    critic_agent = TemporalAgent(lstm_agent)
-    old_critic_agent = copy.deepcopy(critic_agent)
-
-    train_agent = TemporalAgent(tr_agent)
-    eval_agent = TemporalAgent(ev_agent)
-    train_agent.seed(cfg.algorithm.seed)
-
-    old_policy = copy.deepcopy(policy)
+    (
+        train_agent,
+        eval_agent,
+        critic_agent,
+        old_policy,
+        old_critic_agent,
+        policy,
+    ) = create_ppo_agent(cfg, train_env_agent, eval_env_agent)
 
 
 
@@ -165,7 +156,7 @@ def run_ppo_clip(cfg):
 
     # Training loop
     for epoch in range(cfg.algorithm.max_epochs):
-        lstm_agent.refresh_internal_values()
+        policy.refresh_internal_values()
 
         # Execute the training agent in the workspace
 
@@ -204,6 +195,7 @@ def run_ppo_clip(cfg):
         # Compute the critic value over the whole workspace
         critic_agent(train_workspace, n_steps=cfg.algorithm.n_steps - delta_t)
 
+
         transition_workspace = train_workspace.get_transitions()
 
         done, truncated, reward, action, v_value = transition_workspace[
@@ -213,7 +205,10 @@ def run_ppo_clip(cfg):
             "action",
             "v_value",
         ]
+        transition_workspace["v_value"] = v_value.mean(2)
+        v_value = transition_workspace["v_value"]
         nb_steps += action[0].shape[0]
+
 
         # Determines whether values of the critic should be propagated
         # True if the episode reached a time limit or if the task was not done
@@ -223,7 +218,7 @@ def run_ppo_clip(cfg):
         # the critic values are clamped to move not too far away from the values of the previous critic
         with torch.no_grad():
             old_critic_agent(train_workspace, n_steps=cfg.algorithm.n_steps)
-        old_v_value = transition_workspace["v_value"]
+        old_v_value = transition_workspace["v_value"][:,:,-1]
         if cfg.algorithm.clip_range_vf > 0:
             # Clip the difference between old and new values
             # NOTE: this depends on the reward scaling
@@ -232,11 +227,10 @@ def run_ppo_clip(cfg):
                 -cfg.algorithm.clip_range_vf,
                 cfg.algorithm.clip_range_vf,
             )
-
         # then we compute the advantage using the clamped critic values
         # print("reward", reward.shape)
         # print("v_value", v_value.shape)
-        advantage = compute_advantage(cfg, reward, must_bootstrap, v_value[:,:,-1])
+        advantage = compute_advantage(cfg, reward, must_bootstrap, v_value)
 
         # We store the advantage into the transition_workspace
         transition_workspace.set_full("advantage", advantage)
@@ -315,7 +309,7 @@ def run_ppo_clip(cfg):
         if nb_steps - tmp_steps > cfg.algorithm.eval_interval:
             tmp_steps = nb_steps
             eval_workspace = Workspace()  # Used for evaluation
-            lstm_agent.refresh_internal_values()
+            policy.refresh_internal_values()
 
             eval_agent(
                 eval_workspace,
@@ -365,7 +359,7 @@ def run_ppo_clip(cfg):
     # config_name="ppo_lunarlander.yaml",
     # config_name="ppo_swimmer.yaml",
     # config_name="ppo_pendulum.yaml",
-    config_name="ppo_cartpole.yaml",
+    config_name="ppo_cartpole_lstm.yaml",
     #config_name="ppo_cartpole_continuous.yaml",
     #version_base="1.1",
 )

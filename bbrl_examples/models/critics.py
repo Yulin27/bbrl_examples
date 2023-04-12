@@ -40,7 +40,9 @@ class VAgent(Agent):
     def forward(self, t, **kwargs):
         observation = self.get(("env/env_obs", t))
         critic = self.model(observation).squeeze(-1)
+        # print(observation.shape, critic.shape)
         self.set(("v_value", t), critic)
+
 
 
 class DiscreteQAgent(Agent):

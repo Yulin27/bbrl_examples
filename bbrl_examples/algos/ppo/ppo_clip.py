@@ -56,7 +56,6 @@ from bbrl_examples.models.critics import VAgent
 # Allow to display a policy and a critic as a 2D map
 from bbrl.visu.visu_policies import plot_policy
 from bbrl.visu.visu_critics import plot_critic
-from bbrl_examples.wrappers.env_wrappers import FilterWrapper, DelayWrapper
 
 import matplotlib
 
@@ -64,7 +63,7 @@ matplotlib.use("TkAgg")
 
 
 def make_gym_env(env_name):
-    return DelayWrapper(gym.make(env_name),10)
+    return gym.make(env_name)
 
 
 # Create the PPO Agent
@@ -349,7 +348,7 @@ def run_ppo_clip(cfg):
     # config_name="ppo_swimmer.yaml",
     # config_name="ppo_pendulum.yaml",
     config_name="ppo_cartpole.yaml",
-    # config_name="ppo_cartpole_continuous.yaml",
+    #config_name="ppo_cartpole_continuous.yaml",
     # version_base="1.1",
 )
 def main(cfg: DictConfig):

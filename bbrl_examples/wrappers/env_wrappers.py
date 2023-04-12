@@ -15,7 +15,7 @@ class FilterWrapper(gym.ObservationWrapper):
         return np.array([observation[0], observation[2]])
 
 class DelayWrapper(gym.ObservationWrapper):
-    def __init__(self, env, N=1):
+    def __init__(self, env, N=10):
         super().__init__(env)
         self.N = N
         self.state_buffer = np.zeros((N, *env.observation_space.shape))
