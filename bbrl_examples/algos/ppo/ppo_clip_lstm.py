@@ -1,16 +1,28 @@
-from bbrl_examples.wrappers.env_wrappers import FilterWrapper, DelayWrapper
+"""
+This version of PPO works, but it incorrectly samples minibatches randomly from the rollouts
+without making sure that each sample is used once and only
+See: https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
+for a full description of all the coding tricks that should be integrated
+"""
+
+import random
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch as th
+
+from bbrl.visu.common import final_show
+
 import sys
 import os
 import copy
-import numpy as np
+
 import torch
 import torch.nn as nn
 
 import gym
 import bbrl_gym
 import hydra
-
-from tensorboard import notebook
 
 from omegaconf import DictConfig
 
@@ -40,6 +52,7 @@ from bbrl_examples.models.envs import create_env_agents
 from bbrl_examples.models.stochastic_actors import (
     TunableVarianceContinuousActor,
     TunableVarianceContinuousActorExp,
+    TunableVariancePPOActor,
     TunableVariancePPOLSTMActor,
 )
 from bbrl_examples.models.stochastic_actors import SquashedGaussianActor
@@ -51,28 +64,29 @@ from bbrl_examples.models.critics import VAgent
 # Allow to display a policy and a critic as a 2D map
 from bbrl.visu.visu_policies import plot_policy
 from bbrl.visu.visu_critics import plot_critic
-from bbrl_examples.wrappers.env_wrappers import FilterWrapper, DelayWrapper
 
+from bbrl_examples.wrappers.env_wrappers import FilterWrapper, DelayWrapper
 import matplotlib
 
 matplotlib.use("TkAgg")
 
 
 def make_gym_env(env_name):
-    return gym.make(env_name)
+    return DelayWrapper(gym.make(env_name), 1)
 
 
 # Create the PPO Agent
 def create_ppo_agent(cfg, train_env_agent, eval_env_agent):
     obs_size, act_size = train_env_agent.get_obs_and_actions_sizes()
     policy = globals()[cfg.algorithm.actor_type](
-        obs_size, cfg.algorithm.architecture.actor_hidden_size[0], 2, act_size
+        obs_size, cfg.algorithm.architecture.actor_hidden_size[0],2, act_size
     )
     tr_agent = Agents(train_env_agent, policy)
     ev_agent = Agents(eval_env_agent, policy)
 
-    critic_agent = TemporalAgent(VAgent(obs_size, cfg.algorithm.architecture.critic_hidden_size))
-
+    critic_agent = TemporalAgent(
+        VAgent(obs_size, cfg.algorithm.architecture.critic_hidden_size)
+    )
     old_critic_agent = copy.deepcopy(critic_agent)
 
     train_agent = TemporalAgent(tr_agent)
@@ -81,7 +95,7 @@ def create_ppo_agent(cfg, train_env_agent, eval_env_agent):
 
     old_policy = copy.deepcopy(policy)
 
-    return train_agent, eval_agent, critic_agent, old_policy, old_critic_agent, policy
+    return train_agent, eval_agent, critic_agent, old_policy, old_critic_agent
 
 
 def setup_optimizer(cfg, actor, critic):
@@ -93,7 +107,6 @@ def setup_optimizer(cfg, actor, critic):
 
 def compute_advantage(cfg, reward, must_bootstrap, v_value):
     # Compute temporal difference with GAE
-    # print(v_value.shape, reward.shape, must_bootstrap.shape)
     advantage = gae(
         v_value,
         reward,
@@ -129,20 +142,13 @@ def run_ppo_clip(cfg):
 
     train_env_agent, eval_env_agent = create_env_agents(cfg)
 
-
-    # 2) Create the PPO agent
     (
         train_agent,
         eval_agent,
         critic_agent,
         old_policy,
         old_critic_agent,
-        policy,
     ) = create_ppo_agent(cfg, train_env_agent, eval_env_agent)
-
-
-
-
 
     # It seems that we can call the policy as if it was a temporal agent
     policy = train_agent.agent.agents[1]
@@ -156,8 +162,6 @@ def run_ppo_clip(cfg):
 
     # Training loop
     for epoch in range(cfg.algorithm.max_epochs):
-        policy.refresh_internal_values()
-
         # Execute the training agent in the workspace
 
         # Handles continuation
@@ -195,7 +199,6 @@ def run_ppo_clip(cfg):
         # Compute the critic value over the whole workspace
         critic_agent(train_workspace, n_steps=cfg.algorithm.n_steps - delta_t)
 
-
         transition_workspace = train_workspace.get_transitions()
 
         done, truncated, reward, action, v_value = transition_workspace[
@@ -205,10 +208,7 @@ def run_ppo_clip(cfg):
             "action",
             "v_value",
         ]
-        transition_workspace["v_value"] = v_value.mean(2)
-        v_value = transition_workspace["v_value"]
         nb_steps += action[0].shape[0]
-
 
         # Determines whether values of the critic should be propagated
         # True if the episode reached a time limit or if the task was not done
@@ -218,7 +218,7 @@ def run_ppo_clip(cfg):
         # the critic values are clamped to move not too far away from the values of the previous critic
         with torch.no_grad():
             old_critic_agent(train_workspace, n_steps=cfg.algorithm.n_steps)
-        old_v_value = transition_workspace["v_value"][:,:,-1]
+        old_v_value = transition_workspace["v_value"]
         if cfg.algorithm.clip_range_vf > 0:
             # Clip the difference between old and new values
             # NOTE: this depends on the reward scaling
@@ -227,9 +227,8 @@ def run_ppo_clip(cfg):
                 -cfg.algorithm.clip_range_vf,
                 cfg.algorithm.clip_range_vf,
             )
+
         # then we compute the advantage using the clamped critic values
-        # print("reward", reward.shape)
-        # print("v_value", v_value.shape)
         advantage = compute_advantage(cfg, reward, must_bootstrap, v_value)
 
         # We store the advantage into the transition_workspace
@@ -309,8 +308,6 @@ def run_ppo_clip(cfg):
         if nb_steps - tmp_steps > cfg.algorithm.eval_interval:
             tmp_steps = nb_steps
             eval_workspace = Workspace()  # Used for evaluation
-            policy.refresh_internal_values()
-
             eval_agent(
                 eval_workspace,
                 t=0,
@@ -353,15 +350,74 @@ def run_ppo_clip(cfg):
                     )
 
 
+def plot_cartpole_policy(
+    agent, env, directory, figure_name, plot=True, save_figure=True, stochastic=None
+):
+    """
+    Visualization of a policy in a N-dimensional state space
+    The N-dimensional state space is projected into its first two dimensions.
+    A FeatureInverter wrapper should be used to select which features to put first to plot them
+    :param agent: the policy agent to be plotted
+    :param env: the environment
+    :param figure_name: the name of the file to save the figure
+    :param directory: the path to the file to save the figure
+    :param plot: whether the plot should be interactive
+    :param save_figure: whether the figure should be saved
+    :param stochastic: whether one wants to plot a deterministic or stochastic policy
+    :return: nothing
+    """
+    if env.observation_space.shape[0] <= 2:
+        msg = f"Observation space dim {env.observation_space.shape[0]}, should be > 2"
+        raise (ValueError(msg))
+    definition = 100
+    portrait = np.zeros((definition, definition))
+    state_min = env.observation_space.low
+    state_max = env.observation_space.high
+
+    for index_x, x in enumerate(
+        np.linspace(state_min[0], state_max[0], num=definition)
+    ):
+        for index_y, y in enumerate(
+            np.linspace(state_min[2], state_max[2], num=definition)
+        ):
+            obs = np.array([x])
+            z1 = random.random() - 0.5
+            z2 = random.random() - 0.5
+            obs = np.append(obs, z1)
+            obs = np.append(obs, y)
+            obs = np.append(obs, z2)
+            obs = th.from_numpy(obs.astype(np.float32))
+            action = agent.predict_action(obs, stochastic)
+
+            portrait[definition - (1 + index_y), index_x] = action.item()
+
+    plt.figure(figsize=(10, 10))
+    plt.imshow(
+        portrait,
+        cmap="inferno",
+        extent=[state_min[0], state_max[0], state_min[2], state_max[2]],
+        aspect="auto",
+    )
+
+    title = "Cartpole Actor"
+    plt.colorbar(label="action")
+    directory += "/cartpole_policies/"
+    # Add a point at the center
+    plt.scatter([0], [0])
+    x_label, y_label = getattr(env.observation_space, "names", ["x", "y"])
+    final_show(
+        save_figure, plot, directory, figure_name + ".png", x_label, y_label, title
+    )
+
 @hydra.main(
     config_path="./configs/",
     # config_name="ppo_lunarlander_continuous.yaml",
     # config_name="ppo_lunarlander.yaml",
     # config_name="ppo_swimmer.yaml",
     # config_name="ppo_pendulum.yaml",
-    config_name="ppo_cartpole_lstm.yaml",
-    #config_name="ppo_cartpole_continuous.yaml",
-    #version_base="1.1",
+    # config_name="ppo_cartpole.yaml",
+    config_name="ppo_cartpole_continuous_lstm.yaml",
+    # version_base="1.1",
 )
 def main(cfg: DictConfig):
     # print(OmegaConf.to_yaml(cfg))
@@ -369,13 +425,8 @@ def main(cfg: DictConfig):
     chrono = Chrono()
     run_ppo_clip(cfg)
     chrono.stop()
-    # notebook.start("--logdir ./ppo_logs")
-
 
 
 if __name__ == "__main__":
     sys.path.append(os.getcwd())
     main()
-
-
-     

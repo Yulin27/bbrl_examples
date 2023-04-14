@@ -14,6 +14,7 @@ class FilterWrapper(gym.ObservationWrapper):
     def observation(self, observation):
         return np.array([observation[0], observation[2]])
 
+
 class DelayWrapper(gym.ObservationWrapper):
     def __init__(self, env, N=10):
         super().__init__(env)
@@ -22,13 +23,18 @@ class DelayWrapper(gym.ObservationWrapper):
         self.observation_space = env.observation_space
 
     def reset(self, **kwargs):
-        self.state_buffer = np.zeros((self.N, *self.observation_space.shape))
-        return self.observation(self.env.reset(**kwargs))
+        self.state_buffer.fill(0)
+        return self.env.reset(**kwargs)
 
     def observation(self, observation):
-        self.state_buffer = np.roll(self.state_buffer, shift=-1, axis=0)
+        self.state_buffer[:-1] = self.state_buffer[1:]
         self.state_buffer[-1] = observation
         return self.state_buffer[0]
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+        return self.observation(observation), reward, done, info
+
 
 class RocketLanderWrapper(gym.Wrapper):
     """
