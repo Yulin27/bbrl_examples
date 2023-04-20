@@ -301,88 +301,7 @@ class TunableVariancePPOActor(StochasticActor):
         mean = self.model(obs)
         # std must be positive
         return Independent(Normal(mean, self.soft_plus(self.std_param[:, 0])), 1), mean
-    
-# class TunableVariancePPOLSTMActor(StochasticActor):
-#     """
-#     The official PPO actor uses Tanh activation functions and orthogonal initialization
-#     """
-#     def __init__(self, state_dim, hidden_dim, nb_layers, action_dim):
-#         super().__init__()
-#         self.is_q_function = False
-#         self.hidden_dim = hidden_dim
-#         self.model = nn.LSTM(state_dim, hidden_dim, nb_layers, batch_first=True)
-#         self.fc = nn.Linear(hidden_dim, action_dim)
-#         self.nb_layers = nb_layers
-#         self.batch_size = 1
-#         self.h = torch.zeros(nb_layers, self.batch_size, hidden_dim)
-#         self.c = torch.zeros(nb_layers, self.batch_size, hidden_dim)
-#         self.init_weights()
-#         self.soft_plus = torch.nn.Softplus()
-#         init_variance = torch.randn(1, action_dim)
-#         self.std_param = nn.parameter.Parameter(init_variance)
 
-#     def init_weights(self):
-#         # Orthogonal initialization for LSTM weights
-#         for name, param in self.model.named_parameters():
-#             if "weight_ih" in name:
-#                 nn.init.orthogonal_(param)
-#             elif "weight_hh" in name:
-#                 nn.init.orthogonal_(param)
-
-#     def forward(self, t, choose_action=True, stochastic=False, predict_proba=False, compute_entropy=False, **kwargs):
-#         print(t)
-#         # 0
-#         # tensor([[-0.0374, -0.0232,  0.0149,  0.0296]])
-#         obs = self.get(("env/env_obs", t))
-#         self.batch_size = obs.shape[0]
-#         lstm_out, (h, c) = self.model(obs.unsqueeze(0), (self.h, self.c))
-
-#         # Extract the v-value from LSTM output
-#         v_value = lstm_out[:, -1, :]  # Extract the last timestep's output as the v-value
-#         q_values = self.fc(v_value)
-#         # Apply Tanh activation to q_values
-#         q_values = torch.tanh(q_values)
-#         self.set(("v_value", t), v_value)
-#         self.set(("q_values", t), q_values)
-#         if choose_action:
-#             action = q_values.argmax(1)
-#             self.set(("action", t), action)
-
-#         if "observation" in kwargs:
-#             observation = kwargs["observation"]
-#         else:
-#             observation = self.get(("env/env_obs", t))
-#         dist, scores = self.get_distribution(observation)
-#         probs = torch.softmax(scores, dim=-1)
-
-#         if compute_entropy:
-#             entropy = dist.entropy()
-#             self.set(("entropy", t), entropy)
-
-#         if predict_proba:
-#             action = self.get(("action", t))
-#             log_prob = probs[torch.arange(probs.size()[0]), action].log()
-#             self.set(("logprob_predict", t), log_prob)
-#         else:
-#             if stochastic:
-#                 action = dist.sample()
-#             else:
-#                 action = scores.argmax(1)
-
-#             log_probs = probs[torch.arange(probs.size()[0]), action].log()
-
-#             self.set(("action", t), action)
-#             self.set(("action_logprobs", t), log_probs)
-            
-#     def refresh_internal_values(self):
-#         self.h = torch.zeros(self.nb_layers, self.batch_size, self.hidden_dim)
-#         self.c = torch.zeros(self.nb_layers, self.batch_size, self.hidden_dim)
-
-#     def get_distribution(self, obs: torch.Tensor):
-#         mean = self.model(obs)[0].mean(1).reshape(-1, 1)
-#         # std must be positive
-#         print(self.soft_plus(self.std_param[:, 0]), mean)
-#         return Independent(Normal(mean, self.soft_plus(self.std_param)), 1), mean
 
 class TunableVariancePPOLSTMActor(StochasticActor):
     """
@@ -412,14 +331,42 @@ class TunableVariancePPOLSTMActor(StochasticActor):
             elif "weight_hh" in name:
                 nn.init.orthogonal_(param)
 
-    def get_distribution(self, obs: torch.Tensor):
-        # print(obs.unsqueeze(0).shape, h0.shape, c0.shape)
-        lstm_out, _ = self.lstm(obs.unsqueeze(0), (self.h, self.c))  
-        lstm_out = lstm_out[-1] 
-        mean = self.fc(lstm_out)  
+    def forward(
+        self, t, stochastic=False, predict_proba=False, compute_entropy=False, hidden_state=None, **kwargs
+    ):
+        obs = self.get(("env/env_obs", t))
+        dist, mean = self.get_distribution(obs, hidden_state=hidden_state)
+
+        if compute_entropy:
+            self.set(("entropy", t), dist.entropy())
+
+        if predict_proba:
+            action = self.get(("action", t))
+            self.set(("logprob_predict", t), dist.log_prob(action))
+        else:
+            action = dist.sample() if stochastic else mean
+
+            self.set(("action", t), action)
+            self.set(("action_logprobs", t), dist.log_prob(action))
+
+    def predict_action(self, obs, stochastic=False, hidden_state=None):
+        dist, mean = self.get_distribution(obs, hidden_state=hidden_state)
+        return dist.sample() if stochastic else mean
+    def get_lstm_state(self):
+        return self.h, self.c
+
+    def get_distribution(self, obs: torch.Tensor, hidden_state=None):
+        if hidden_state is not None:
+            h, c = hidden_state
+        else:
+            h, c = self.h, self.c
+
+        lstm_out, (new_h, new_c) = self.lstm(obs.unsqueeze(0), (h, c))
+
+        lstm_out = lstm_out[-1]
+        mean = self.fc(lstm_out)
         return Independent(Normal(mean, self.soft_plus(self.std_param[:, 0])), 1), mean
 
     def refresh_internal_values(self):
         self.h = torch.zeros(self.nb_layers, self.batch_size, self.hidden_size)
         self.c = torch.zeros(self.nb_layers, self.batch_size, self.hidden_size)
-        

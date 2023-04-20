@@ -10,7 +10,7 @@
       algorithm:
             seed: 5
             max_grad_norm: 0.5
-            n_envs: 8
+            n_envs: 1
             n_steps: 100
             eval_interval: 1000
             nb_evals: 10
