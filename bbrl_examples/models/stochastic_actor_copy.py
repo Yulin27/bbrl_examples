@@ -176,9 +176,9 @@ class StochasticActor(BaseActor):
         If predict_proba is true, the agent takes the action already written in the workspace and adds its probability
         Otherwise, it writes the new action
         """
-        # print(t)
         obs = self.get(("env/env_obs", t))
         dist, mean = self.get_distribution(obs)
+
         if compute_entropy:
             self.set(("entropy", t), dist.entropy())
 
@@ -321,50 +321,87 @@ class TunableVariancePPOLSTMActor(StochasticActor):
         self.h = torch.zeros(nb_layers, self.batch_size, hidden_size)
         self.c = torch.zeros(nb_layers, self.batch_size, hidden_size)
         self.init_weights()
-
+        self.init = True
+        self.initial_state = None
 
     def init_weights(self):
-        # Orthogonal initialization for LSTM weights and biases
+        # Orthogonal initialization for LSTM weights
         for name, param in self.lstm.named_parameters():
             if "weight_ih" in name:
                 nn.init.orthogonal_(param)
             elif "weight_hh" in name:
                 nn.init.orthogonal_(param)
 
+    # def forward(
+            
+    #     self, t, stochastic=False, predict_proba=False, compute_entropy=False, hidden_state=None, **kwargs
+    # ):
+    #     obs = self.get(("env/env_obs", t))
+    #     # print(t)
+    #     # if self.init and t == 0:
+    #     #     self.h = torch.zeros(self.nb_layers, self.batch_size, self.hidden_size)
+    #     #     self.c = torch.zeros(self.nb_layers, self.batch_size, self.hidden_size)
+    #     #     self.init = False
+    #     # else:
+    #     #     print("==",self.get('lstm_h_state').shape)
+    #     #     self.h = torch.transpose(self.get('lstm_h_state').clone(),0,1)
+    #     #     self.c = torch.transpose(self.get('lstm_c_state').clone(),0,1)
+
+    #     # print("!!!!",self.h.shape)
+    #     # print("!!!",self.c.shape)
+    #     # if self.init and t == 0:    
+    #     #     self.h = torch.zeros(self.nb_layers, self.batch_size, self.hidden_size)
+    #     #     self.c = torch.zeros(self.nb_layers, self.batch_size, self.hidden_size)
+    #     #     self.init = False
+    #     # elif t==0:
+    #     #     self.h, self.c = self.initial_state
+    #         #print(sum(self.initial_state))
+    #     dist, mean = self.get_distribution(obs, hidden_state=hidden_state)
+
+    #     if compute_entropy:
+    #         self.set(("entropy", t), dist.entropy())
+    #     #if t < 99:
+    #             # print("---",torch.transpose(self.h, 0, 1).shape)
+    #     #     self.set(('lstm_h_state', t+1), torch.transpose(self.h, 0, 1))
+    #     #     self.set(('lstm_c_state', t+1), torch.transpose(self.c, 0, 1))
+    #     #     print(sum(self.h))
+    #     # self.initial_state = (self.h, self.c)
+            
+    #     if predict_proba:
+
+    #         action = self.get(("action", t))
+    #         self.set(("logprob_predict", t), dist.log_prob(action))
+    #     else:
+    #         action = dist.sample() if stochastic else mean
+
+    #         self.set(("action", t), action)
+    #         self.set(("action_logprobs", t), dist.log_prob(action))
+
+    # def predict_action(self, obs, stochastic=False, hidden_state=None):
+    #     dist, mean = self.get_distribution(obs, hidden_state=hidden_state)
+    #     return dist.sample() if stochastic else mean
+    
+    # def get_lstm_state(self):
+    #     return self.h, self.c
+
     def get_distribution(self, obs: torch.Tensor, hidden_state=None):
-        lstm_out, (new_h, new_c) = self.lstm(obs.unsqueeze(0), (self.h, self.c))
+        # if hidden_state is not None:
+        #     h, c = hidden_state
+        # else:
+        #     h, c = self.h, self.c
+
+        h, c = self.h, self.c
+
+        lstm_out, (new_h, new_c) = self.lstm(obs.unsqueeze(0), (h, c))
+
+
         lstm_out = lstm_out[-1]
         mean = self.fc(lstm_out)
-        self.h = new_h.detach()
-        self.c = new_c.detach()
+        self.h = new_h.clone()
+        self.c = new_c.clone()
+
         return Independent(Normal(mean, self.soft_plus(self.std_param[:, 0])), 1), mean
 
     def refresh_internal_values(self):
         self.h = torch.zeros(self.nb_layers, self.batch_size, self.hidden_size)
         self.c = torch.zeros(self.nb_layers, self.batch_size, self.hidden_size)
-
-    def forward(
-        self, t, stochastic=False, predict_proba=False, compute_entropy=False, **kwargs
-    ):
-        """
-        Compute the action given either a time step (looking into the workspace)
-        or an observation (in kwargs)
-        If predict_proba is true, the agent takes the action already written in the workspace and adds its probability
-        Otherwise, it writes the new action
-        """
-
-        obs = self.get(("env/env_obs", t))
-        dist, mean = self.get_distribution(obs)
-        if compute_entropy:
-            self.set(("entropy", t), dist.entropy())
-
-        if predict_proba:
-            action = self.get(("action", t))
-            self.set(("logprob_predict", t), dist.log_prob(action))
-        else:
-            
-            action = dist.sample() if stochastic else mean
-            self.set(("action", t), action)
-            self.set(("action_logprobs", t), dist.log_prob(action))
-
-    

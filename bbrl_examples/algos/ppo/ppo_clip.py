@@ -64,7 +64,7 @@ matplotlib.use("TkAgg")
 
 
 def make_gym_env(env_name):
-    return gym.make(env_name)
+    return DelayWrapper(gym.make(env_name),2)
 
 
 # Create the PPO Agent

@@ -72,7 +72,7 @@ matplotlib.use("TkAgg")
 
 
 def make_gym_env(env_name):
-    return DelayWrapper(gym.make(env_name), 1)
+    return FilterWrapper(gym.make(env_name))
 
 
 # Create the PPO Agent
@@ -95,7 +95,7 @@ def create_ppo_agent(cfg, train_env_agent, eval_env_agent):
 
     old_policy = copy.deepcopy(policy)
 
-    return train_agent, eval_agent, critic_agent, old_policy, old_critic_agent
+    return train_agent, eval_agent, critic_agent, old_policy, old_critic_agent, policy
 
 
 def setup_optimizer(cfg, actor, critic):
@@ -148,6 +148,7 @@ def run_ppo_clip(cfg):
         critic_agent,
         old_policy,
         old_critic_agent,
+        policy,
     ) = create_ppo_agent(cfg, train_env_agent, eval_env_agent)
 
     # It seems that we can call the policy as if it was a temporal agent
@@ -159,24 +160,26 @@ def run_ppo_clip(cfg):
 
     # Configure the optimizer
     optimizer = setup_optimizer(cfg, train_agent, critic_agent)
-
+    # train_workspace.set(hidden_state, critic_agent.init_hidden_state())
     # Training loop
+
+
     for epoch in range(cfg.algorithm.max_epochs):
         # Execute the training agent in the workspace
-
         # Handles continuation
+        # print("epoch:",epoch)
+        policy.refresh_internal_values()
+
         delta_t = 0
         if epoch > 0:
             train_workspace.zero_grad()
             delta_t = 1
             train_workspace.copy_n_last_steps(1)
-
         # Run the curren actor and evaluate the proba of its action according to the old actor
         # The old_actor can be run after the train_agent on the same workspace
         # because it writes a logprob_predict and not an action.
-        # That is, it does not determine the action of the old_actor,
-        # it just determines the proba of the action of the current actor given its own probabilities
-
+        # That is, itits own probabilities does not determine the action of the old_actor,
+        # it just determines the proba of the action of the current actor given 
         with torch.no_grad():
             train_agent(
                 train_workspace,
@@ -185,6 +188,7 @@ def run_ppo_clip(cfg):
                 stochastic=True,
                 predict_proba=False,
                 compute_entropy=False,
+                # hidden_state=policy.get_lstm_state()
             )
             old_actor(
                 train_workspace,
@@ -194,12 +198,24 @@ def run_ppo_clip(cfg):
                 # to get the ratio of probabilities
                 predict_proba=True,
                 compute_entropy=False,
+                # hidden_state=policy.get_lstm_state()
             )
 
         # Compute the critic value over the whole workspace
         critic_agent(train_workspace, n_steps=cfg.algorithm.n_steps - delta_t)
+        done = train_workspace["env/done"][:-1]
+        done = torch.logical_or(done, train_workspace["env/truncated"][:-1])
 
         transition_workspace = train_workspace.get_transitions()
+        # done, truncated, reward, action, v_value, lstm_h_state, lstm_c_state = transition_workspace[
+        #     "env/done",
+        #     "env/truncated",
+        #     "env/reward",
+        #     "action",
+        #     "v_value",
+        #     "lstm_h_state",
+        #     "lstm_c_state"
+        # ]
 
         done, truncated, reward, action, v_value = transition_workspace[
             "env/done",
@@ -207,6 +223,7 @@ def run_ppo_clip(cfg):
             "env/reward",
             "action",
             "v_value",
+
         ]
         nb_steps += action[0].shape[0]
 
@@ -307,6 +324,7 @@ def run_ppo_clip(cfg):
         # Evaluate if enough steps have been performed
         if nb_steps - tmp_steps > cfg.algorithm.eval_interval:
             tmp_steps = nb_steps
+            policy.refresh_internal_values()
             eval_workspace = Workspace()  # Used for evaluation
             eval_agent(
                 eval_workspace,
@@ -430,3 +448,5 @@ def main(cfg: DictConfig):
 if __name__ == "__main__":
     sys.path.append(os.getcwd())
     main()
+
+
